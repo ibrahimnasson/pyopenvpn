@@ -115,8 +115,8 @@ class Client:
         self.init_state = State.CONTROL_CHANNEL_OPEN
 
         # Control channel ready
-        # Initialization loop:
-        while True:
+        self.running = True
+        while self.running:
             # Anything special to do?
             if self.init_state == State.CONTROL_CHANNEL_OPEN:
                 self.log.info("Control channel open, sending auth...")
@@ -152,7 +152,6 @@ class Client:
         assert self.init_state == State.PULL_REQUEST_SENT
         self.init_state = State.OPTIONS_PUSHED
 
-        print(repr(data))
         self.settings.update(Settings.from_push(data[:-1].decode('utf-8')))
 
         ifconfig = self.settings.get('ifconfig').split(' ')
@@ -215,6 +214,9 @@ class Client:
         if decode:
             return scapy.layers.inet.IP(data)
         return data
+
+    def stop(self):
+        self.running = False
 
     def _send(self, data):
         self.socket.send(data)
