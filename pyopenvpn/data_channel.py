@@ -2,7 +2,7 @@
 import hashlib
 import hmac
 import logging
-from Crypto.Cipher import Blowfish
+from Crypto.Cipher import Blowfish, AES
 
 from . import protocol
 from .crypto_utils import _prf, shex, getrandbytes
@@ -17,6 +17,7 @@ PING_DATA = bytes([
 
 class CipherBase:
     DEFAULT_KEYSIZE_BITS = None
+    BLOCK_SIZE = None
 
     def __init__(self, client):
         self.keysize = client.settings['keysize']
@@ -40,6 +41,7 @@ class CipherBase:
 
 class BlowfishCBCCipher(CipherBase):
     DEFAULT_KEYSIZE_BITS = 128
+    BLOCK_SIZE = 8
 
     def encrypt(self, key, iv, plaintext):
         cipher = Blowfish.new(key=key[:self.keysize_bytes], IV=iv, mode=Blowfish.MODE_CBC)
@@ -50,6 +52,33 @@ class BlowfishCBCCipher(CipherBase):
         cipher = Blowfish.new(key=key[:self.keysize_bytes], IV=iv, mode=Blowfish.MODE_CBC)
         plaintext = cipher.decrypt(ciphertext)
         return plaintext
+
+
+class AESCBCCipher(CipherBase):
+    DEFAULT_KEYSIZE_BITS = 128
+    BLOCK_SIZE = 16
+
+    def encrypt(self, key, iv, plaintext):
+        cipher = AES.new(key=key[:self.keysize_bytes], IV=iv, mode=AES.MODE_CBC)
+        ciphertext = cipher.encrypt(plaintext)
+        return ciphertext
+
+    def decrypt(self, key, iv, ciphertext):
+        cipher = AES.new(key=key[:self.keysize_bytes], IV=iv, mode=AES.MODE_CBC)
+        plaintext = cipher.decrypt(ciphertext)
+        return plaintext
+
+
+class AES128CBCCipher(AESCBCCipher):
+    DEFAULT_KEYSIZE_BITS = 128
+
+
+class AES192CBCCipher(AESCBCCipher):
+    DEFAULT_KEYSIZE_BITS = 192
+
+
+class AES256CBCCipher(AESCBCCipher):
+    DEFAULT_KEYSIZE_BITS = 256
 
 
 class HMACBase:
@@ -85,6 +114,9 @@ class DataChannel(Channel):
 
         ciphers = {
             'BF-CBC': BlowfishCBCCipher,
+            'AES-128-CBC': AES128CBCCipher,
+            'AES-192-CBC': AES192CBCCipher,
+            'AES-256-CBC': AES256CBCCipher,
         }
         hmacs = {
             'SHA1': SHA1HMAC,
@@ -118,9 +150,10 @@ class DataChannel(Channel):
         self.log.info("hmac_key_remote:   " + shex(self.hmac_key_remote))
 
     def encrypt(self, plaintext):
-        iv = getrandbytes(8)
+        bs = self.cipher.BLOCK_SIZE
+        iv = getrandbytes(bs)
 
-        n = 8 - (len(plaintext) % 8)
+        n = bs - (len(plaintext) % bs)
         padded = plaintext + b''.join(bytes([n]) for _ in range(n))
 
         ciphertext = self.cipher.encrypt(self.cipher_key_local, iv, padded)
@@ -131,12 +164,14 @@ class DataChannel(Channel):
         return hmac_ + iv + ciphertext
 
     def decrypt(self, data):
+        bs = self.cipher.BLOCK_SIZE
+
         if len(data) < 28:
             raise InvalidPacketError("Packet too short (%d bytes)" % len(data))
 
         hmac_ = data[:self.hmac.HASH_LENGTH]
-        iv = data[self.hmac.HASH_LENGTH:self.hmac.HASH_LENGTH + 8]
-        ciphertext = data[self.hmac.HASH_LENGTH + 8:]
+        iv = data[self.hmac.HASH_LENGTH:self.hmac.HASH_LENGTH + bs]
+        ciphertext = data[self.hmac.HASH_LENGTH + bs:]
 
         our_hmac = self.hmac.hash(self.hmac_key_remote, iv + ciphertext)
         if not hmac.compare_digest(our_hmac, hmac_):
@@ -148,7 +183,7 @@ class DataChannel(Channel):
 
         # remove padding
         n = plaintext[-1]
-        assert n < len(plaintext) and n < 8
+        assert n < len(plaintext) and n < bs
         plaintext = plaintext[:-n]
 
         self.log.debug("decrypted %d bytes (%d pt bytes): iv=%s hmac=%s",

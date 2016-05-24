@@ -24,7 +24,7 @@ privileges or a tun device.
 
 - Config file: It get parsed (including inline files), some options are even used.
 - Mode: Only tls-client.
-- Ciphers: Only BF-CBC is implemented. (default)
+- Ciphers: BF-CBC, AES-CBC (128, 192, 256 bits)
 - Protocol: Only UDPv4.
 - HMAC: Only SHA1. (default)
 - Compression: TODO

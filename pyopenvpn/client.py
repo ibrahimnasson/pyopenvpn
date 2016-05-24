@@ -54,8 +54,6 @@ class Client:
         # also a TODO-list of things to support
         assert_opt('dev-type', 'tun')
         assert_opt('proto', 'UDPv4')
-        assert_opt('cipher', 'BF-CBC')
-        assert_opt('auth', 'SHA1')
         assert_opt('key-method', '2')
         assert_opt('tls-client', True)
 
