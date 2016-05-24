@@ -15,6 +15,33 @@ PING_DATA = bytes([
 ])
 
 
+class CipherBase:
+    def __init__(self, client):
+        pass
+
+    def encrypt(self, key, iv, plaintext):
+        raise NotImplementedError()
+
+    def decrypt(self, key, iv, ciphertext):
+        raise NotImplementedError()
+
+
+class BlowfishCBCCipher(CipherBase):
+    def encrypt(self, key, iv, plaintext):
+        cipher = Blowfish.new(key=key, IV=iv, mode=Blowfish.MODE_CBC)
+        ciphertext = cipher.encrypt(plaintext)
+        return ciphertext
+
+    def decrypt(self, key, iv, ciphertext):
+        cipher = Blowfish.new(key=key, IV=iv, mode=Blowfish.MODE_CBC)
+        plaintext = cipher.decrypt(ciphertext)
+        return plaintext
+
+
+def hmac_sha1(key, data):
+    return hmac.new(key=key, msg=data, digestmod=hashlib.sha1).digest()
+
+
 class DataChannel(Channel):
     OPCODES = (protocol.P_DATA_V1, )
 
@@ -25,6 +52,16 @@ class DataChannel(Channel):
 
         # Packets auth'd and decrypted, ready for the user to read then
         self.out_queue = []
+
+        ciphers = {
+            'BF-CBC': BlowfishCBCCipher,
+        }
+        hmacs = {
+            'SHA1': hmac_sha1,
+        }
+
+        self.cipher = ciphers[client.settings['cipher']](self)
+        self.hmac = hmacs[client.settings['auth']]
 
         super().__init__()
 
@@ -42,16 +79,13 @@ class DataChannel(Channel):
                     self.c.ctrl.remote_session_id,
                     256)
 
-        self.cipher1, self.hmac1 = keys[0:64], keys[64:128]
-        self.cipher2, self.hmac2 = keys[128:192], keys[192:256]
+        self.cipher_key_local, self.hmac_key_local = keys[0:64], keys[64:128]
+        self.cipher_key_remote, self.hmac_key_remote = keys[128:192], keys[192:256]
 
-        self.log.info("cipher1: " + shex(self.cipher1))
-        self.log.info("cipher2: " + shex(self.cipher2))
-        self.log.info("hmac1  : " + shex(self.hmac1))
-        self.log.info("hmac2  : " + shex(self.hmac2))
-
-    def data_hmac(self, key, data):
-        return hmac.new(key=key, msg=data, digestmod=hashlib.sha1).digest()
+        self.log.info("cipher_key_local:  " + shex(self.cipher_key_local))
+        self.log.info("cipher_key_remote: " + shex(self.cipher_key_remote))
+        self.log.info("hmac_key_local:    " + shex(self.hmac_key_local))
+        self.log.info("hmac_key_remote:   " + shex(self.hmac_key_remote))
 
     def encrypt(self, plaintext):
         iv = getrandbytes(8)
@@ -59,10 +93,9 @@ class DataChannel(Channel):
         n = 8 - (len(plaintext) % 8)
         padded = plaintext + b''.join(bytes([n]) for _ in range(n))
 
-        cipher = Blowfish.new(key=self.cipher1[:16], IV=iv, mode=Blowfish.MODE_CBC)
-        ciphertext = cipher.encrypt(padded)
+        ciphertext = self.cipher.encrypt(self.cipher_key_local[:16], iv, padded)
 
-        hmac_ = self.data_hmac(self.hmac1[:20], iv + ciphertext)
+        hmac_ = self.hmac(self.hmac_key_local[:20], iv + ciphertext)
         self.log.debug("encrypted %d bytes (%d pt bytes): iv=%s hmac=%s",
                        len(ciphertext), len(plaintext), shex(iv), shex(hmac_))
         return hmac_ + iv + ciphertext
@@ -75,17 +108,17 @@ class DataChannel(Channel):
         iv = data[20:28]
         ciphertext = data[28:]
 
-        our_hmac = self.data_hmac(self.hmac2[:20], iv + ciphertext)
+        our_hmac = self.hmac(self.hmac_key_remote[:20], iv + ciphertext)
         if not hmac.compare_digest(our_hmac, hmac_):
             self.log.error("cannot decrypt %d bytes: iv=%s hmac=%s local_hmac=%s",
                            shex(iv), shex(hmac_), shex(our_hmac))
             raise InvalidHMACError()
 
-        cipher = Blowfish.new(key=self.cipher2[:16], IV=iv, mode=Blowfish.MODE_CBC)
-        plaintext = cipher.decrypt(ciphertext)
+        plaintext = self.cipher.decrypt(self.cipher_key_remote[:16], iv, ciphertext)
 
         # remove padding
         n = plaintext[-1]
+        assert n < len(plaintext) and n < 8
         plaintext = plaintext[:-n]
 
         self.log.debug("decrypted %d bytes (%d pt bytes): iv=%s hmac=%s",
