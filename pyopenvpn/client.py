@@ -56,7 +56,6 @@ class Client:
         assert_opt('proto', 'UDPv4')
         assert_opt('cipher', 'BF-CBC')
         assert_opt('auth', 'SHA1')
-        assert_opt('keysize', '128')
         assert_opt('key-method', '2')
         assert_opt('tls-client', True)
 

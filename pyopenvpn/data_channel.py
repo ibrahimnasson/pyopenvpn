@@ -16,8 +16,20 @@ PING_DATA = bytes([
 
 
 class CipherBase:
+    DEFAULT_KEYSIZE_BITS = None
+
     def __init__(self, client):
-        pass
+        self.keysize = client.settings['keysize']
+        if self.keysize:
+            self.keysize = int(self.keysize)
+        else:
+            assert self.DEFAULT_KEYSIZE_BITS is not None
+            self.keysize = self.DEFAULT_KEYSIZE_BITS
+
+        if self.keysize % 8 != 0 or self.keysize > 512 or self.keysize < 64:
+            raise Exception("Invalid keysize: %d" % self.keysize)
+
+        self.keysize_bytes = self.keysize // 8
 
     def encrypt(self, key, iv, plaintext):
         raise NotImplementedError()
@@ -27,19 +39,37 @@ class CipherBase:
 
 
 class BlowfishCBCCipher(CipherBase):
+    DEFAULT_KEYSIZE_BITS = 128
+
     def encrypt(self, key, iv, plaintext):
-        cipher = Blowfish.new(key=key, IV=iv, mode=Blowfish.MODE_CBC)
+        cipher = Blowfish.new(key=key[:self.keysize_bytes], IV=iv, mode=Blowfish.MODE_CBC)
         ciphertext = cipher.encrypt(plaintext)
         return ciphertext
 
     def decrypt(self, key, iv, ciphertext):
-        cipher = Blowfish.new(key=key, IV=iv, mode=Blowfish.MODE_CBC)
+        cipher = Blowfish.new(key=key[:self.keysize_bytes], IV=iv, mode=Blowfish.MODE_CBC)
         plaintext = cipher.decrypt(ciphertext)
         return plaintext
 
 
-def hmac_sha1(key, data):
-    return hmac.new(key=key, msg=data, digestmod=hashlib.sha1).digest()
+class HMACBase:
+    SIZE = None
+
+    def __init__(self, client):
+        pass
+
+    def do(self, key, data):
+        raise NotImplementedError()
+
+
+class SHA1HMAC(HMACBase):
+    HASH_LENGTH = 20
+
+    def hash(self, key, data):
+        hmac_ = hmac.new(key=key[:self.HASH_LENGTH],
+                         msg=data,
+                         digestmod=hashlib.sha1)
+        return hmac_.digest()
 
 
 class DataChannel(Channel):
@@ -57,11 +87,11 @@ class DataChannel(Channel):
             'BF-CBC': BlowfishCBCCipher,
         }
         hmacs = {
-            'SHA1': hmac_sha1,
+            'SHA1': SHA1HMAC,
         }
 
-        self.cipher = ciphers[client.settings['cipher']](self)
-        self.hmac = hmacs[client.settings['auth']]
+        self.cipher = ciphers[client.settings['cipher']](self.c)
+        self.hmac = hmacs[client.settings['auth']](self.c)
 
         super().__init__()
 
@@ -93,9 +123,9 @@ class DataChannel(Channel):
         n = 8 - (len(plaintext) % 8)
         padded = plaintext + b''.join(bytes([n]) for _ in range(n))
 
-        ciphertext = self.cipher.encrypt(self.cipher_key_local[:16], iv, padded)
+        ciphertext = self.cipher.encrypt(self.cipher_key_local, iv, padded)
 
-        hmac_ = self.hmac(self.hmac_key_local[:20], iv + ciphertext)
+        hmac_ = self.hmac.hash(self.hmac_key_local, iv + ciphertext)
         self.log.debug("encrypted %d bytes (%d pt bytes): iv=%s hmac=%s",
                        len(ciphertext), len(plaintext), shex(iv), shex(hmac_))
         return hmac_ + iv + ciphertext
@@ -104,17 +134,17 @@ class DataChannel(Channel):
         if len(data) < 28:
             raise InvalidPacketError("Packet too short (%d bytes)" % len(data))
 
-        hmac_ = data[:20]
-        iv = data[20:28]
-        ciphertext = data[28:]
+        hmac_ = data[:self.hmac.HASH_LENGTH]
+        iv = data[self.hmac.HASH_LENGTH:self.hmac.HASH_LENGTH + 8]
+        ciphertext = data[self.hmac.HASH_LENGTH + 8:]
 
-        our_hmac = self.hmac(self.hmac_key_remote[:20], iv + ciphertext)
+        our_hmac = self.hmac.hash(self.hmac_key_remote, iv + ciphertext)
         if not hmac.compare_digest(our_hmac, hmac_):
             self.log.error("cannot decrypt %d bytes: iv=%s hmac=%s local_hmac=%s",
                            shex(iv), shex(hmac_), shex(our_hmac))
             raise InvalidHMACError()
 
-        plaintext = self.cipher.decrypt(self.cipher_key_remote[:16], iv, ciphertext)
+        plaintext = self.cipher.decrypt(self.cipher_key_remote, iv, ciphertext)
 
         # remove padding
         n = plaintext[-1]
