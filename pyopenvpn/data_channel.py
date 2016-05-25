@@ -183,7 +183,7 @@ class DataChannel(Channel):
 
         # remove padding
         n = plaintext[-1]
-        assert n < len(plaintext) and n < bs
+        assert n < len(plaintext) and n <= bs
         plaintext = plaintext[:-n]
 
         self.log.debug("decrypted %d bytes (%d pt bytes): iv=%s hmac=%s",
@@ -222,11 +222,12 @@ class DataChannel(Channel):
             assert compression == 0xfa  # no compression
 
             payload = plaintext[5:]
-            self.out_queue.append(payload)
-            self.log.debug("data: %r", payload)
 
             if payload == PING_DATA:
                 self.log.debug("PING received, replied")
                 self.send(PING_DATA)
                 return
+
+            self.out_queue.append(payload)
+            self.log.debug("data: %r", payload)
 
